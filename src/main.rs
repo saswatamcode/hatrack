@@ -32,7 +32,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -79,7 +78,7 @@ struct AppState {
     client: HttpClient,
     upstream_target: UpstreamTarget,
     proxy_config: ProxyConfig,
-    replica_selector: Arc<Mutex<ReplicaSelector>>,
+    replica_selector: Arc<ReplicaSelector>,
     metrics: Arc<ProxyMetrics>,
 }
 
@@ -150,10 +149,9 @@ async fn proxy(state: &AppState, req: Request) -> Response<Body> {
         }
     };
 
-    let accepted = {
-        let mut selector = state.replica_selector.lock().await;
-        selector.should_accept(cluster, replica_id)
-    };
+    let accepted = state
+        .replica_selector
+        .should_accept(cluster, replica_id);
 
     if !accepted {
         debug!(%cluster, %replica_id, "dropping inactive replica request");
@@ -251,11 +249,11 @@ async fn main() -> Result<(), BoxError> {
         .collect();
 
     let inactive_window = Duration::from_secs(proxy_config.inactive_window_seconds);
-    let replica_selector = Arc::new(Mutex::new(ReplicaSelector::new(
+    let replica_selector = Arc::new(ReplicaSelector::new(
         replicas,
         inactive_window,
         inactive_window,
-    )?));
+    )?);
     spawn_idle_cluster_eviction(Arc::clone(&replica_selector), inactive_window);
 
     let app_state = AppState {

@@ -1,11 +1,8 @@
 use crate::util::error::BoxError;
 
+use dashmap::DashMap;
 use std::sync::Arc;
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
-use tokio::sync::Mutex;
+use std::time::{Duration, Instant};
 use tokio::time;
 use tracing::debug;
 use xxhash_rust::xxh3::xxh3_64;
@@ -16,7 +13,7 @@ pub struct Replica {
 }
 
 #[derive(Debug)]
-pub struct ClusterState {
+struct ClusterState {
     current_rank: usize,
     last_seen: Instant,
     last_touched: Instant,
@@ -51,12 +48,73 @@ impl ClusterState {
             self.clear_failback();
         }
     }
+
+    fn should_accept(
+        &mut self,
+        incoming_replica_id: &str,
+        ranked: &[usize],
+        replicas: &[Replica],
+        silence_timeout: Duration,
+    ) -> bool {
+        self.last_touched = Instant::now();
+
+        // If active replica has gone quiet, move to next ranked replica.
+        if self.last_seen.elapsed() > silence_timeout {
+            self.current_rank = (self.current_rank + 1).min(ranked.len() - 1);
+            self.last_seen = Instant::now();
+            self.clear_failback();
+        }
+
+        if self.current_rank > 0 {
+            self.expire_stale_failback(silence_timeout);
+        }
+
+        let primary_replica = &replicas[ranked[0]].id;
+        let active_replica = &replicas[ranked[self.current_rank]].id;
+
+        // Prefer primary if it comes back.
+        if incoming_replica_id == primary_replica {
+            if self.current_rank == 0 {
+                self.last_seen = Instant::now();
+                self.clear_failback();
+                return true;
+            }
+
+            // Accept primary during probation so both replicas may forward briefly.
+            let now = Instant::now();
+            if self
+                .failback_primary_last_seen
+                .is_none_or(|last| last.elapsed() > silence_timeout)
+            {
+                self.failback_started = Some(now);
+            }
+            self.failback_primary_last_seen = Some(now);
+
+            if self
+                .failback_started
+                .is_some_and(|started| started.elapsed() >= silence_timeout)
+            {
+                self.current_rank = 0;
+                self.last_seen = now;
+                self.clear_failback();
+            }
+
+            return true;
+        }
+
+        if incoming_replica_id == active_replica {
+            self.last_seen = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct ReplicaSelector {
     replicas: Vec<Replica>,
-    clusters: HashMap<String, ClusterState>,
+    clusters: DashMap<String, ClusterState>,
     silence_timeout: Duration,
     idle_ttl: Duration,
 }
@@ -73,75 +131,29 @@ impl ReplicaSelector {
 
         Ok(Self {
             replicas,
-            clusters: HashMap::new(),
+            clusters: DashMap::new(),
             silence_timeout,
             idle_ttl,
         })
     }
 
-    pub fn should_accept(&mut self, cluster: &str, incoming_replica_id: &str) -> bool {
+    pub fn should_accept(&self, cluster: &str, incoming_replica_id: &str) -> bool {
         let ranked = self.ranked_replica_indices(cluster);
 
-        let state = self
+        let mut state = self
             .clusters
             .entry(cluster.to_owned())
             .or_insert_with(ClusterState::new);
 
-        state.last_touched = Instant::now();
-
-        // If active replica has gone quiet, move to next ranked replica.
-        if state.last_seen.elapsed() > self.silence_timeout {
-            state.current_rank = (state.current_rank + 1).min(ranked.len() - 1);
-            state.last_seen = Instant::now();
-            state.clear_failback();
-        }
-
-        if state.current_rank > 0 {
-            state.expire_stale_failback(self.silence_timeout);
-        }
-
-        let primary_replica = &self.replicas[ranked[0]].id;
-        let active_replica = &self.replicas[ranked[state.current_rank]].id;
-
-        // Prefer primary if it comes back.
-        if incoming_replica_id == primary_replica {
-            if state.current_rank == 0 {
-                state.last_seen = Instant::now();
-                state.clear_failback();
-                return true;
-            }
-
-            // Accept primary during probation so both replicas may forward briefly.
-            let now = Instant::now();
-            if state
-                .failback_primary_last_seen
-                .is_none_or(|last| last.elapsed() > self.silence_timeout)
-            {
-                state.failback_started = Some(now);
-            }
-            state.failback_primary_last_seen = Some(now);
-
-            if state
-                .failback_started
-                .is_some_and(|started| started.elapsed() >= self.silence_timeout)
-            {
-                state.current_rank = 0;
-                state.last_seen = now;
-                state.clear_failback();
-            }
-
-            return true;
-        }
-
-        if incoming_replica_id == active_replica {
-            state.last_seen = Instant::now();
-            true
-        } else {
-            false
-        }
+        state.should_accept(
+            incoming_replica_id,
+            &ranked,
+            &self.replicas,
+            self.silence_timeout,
+        )
     }
 
-    pub fn evict_idle_clusters(&mut self) {
+    pub fn evict_idle_clusters(&self) {
         let idle_ttl = self.idle_ttl;
 
         self.clusters
@@ -170,14 +182,13 @@ impl ReplicaSelector {
     }
 }
 
-pub fn spawn_idle_cluster_eviction(selector: Arc<Mutex<ReplicaSelector>>, interval: Duration) {
+pub fn spawn_idle_cluster_eviction(selector: Arc<ReplicaSelector>, interval: Duration) {
     tokio::spawn(async move {
         let mut ticker = time::interval(interval);
 
         loop {
             ticker.tick().await;
 
-            let mut selector = selector.lock().await;
             let before = selector.cluster_count();
             selector.evict_idle_clusters();
             let after = selector.cluster_count();
