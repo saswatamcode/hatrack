@@ -1,6 +1,36 @@
+# Build artifacts
 target
-.git
-.idea
-**/*.rs.bk
+*.rs.bk
 **/mutants.out*
 rustc-ice-*.txt
+
+# Version control
+.git
+.gitignore
+.github
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Documentation and misc
+*.md
+!README.md
+LICENSE
+.DS_Store
+
+# CI/CD
+.buildxcache
+Dockerfile.cross
+
+# Benchmarks and profiling output (but keep benches/ source for Cargo.toml validation)
+criterion
+flamegraph.svg
+perf.data
+perf.data.old
+
+# Tests
+tests

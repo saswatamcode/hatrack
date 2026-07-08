@@ -1,8 +1,26 @@
-.PHONY: help build build-release clippy clippy-lib clippy-strict test fmt fmt-check clean docker-build docker-run bench bench-baseline bench-compare bench-profile bench-heap all check
+.PHONY: help build build-release clippy clippy-lib clippy-strict test fmt fmt-check clean docker-build docker-push docker-buildx docker-run bench bench-baseline bench-compare bench-profile bench-heap all check
 
+# Binary and Docker configuration
 BINARY_NAME := hatrack
+DOCKER_IMAGE_REPO ?= quay.io/saswatamcode/hatrack
+DOCKER_IMAGE_TAG ?= $(subst /,-,$(shell git rev-parse --abbrev-ref HEAD))-$(shell date +%Y-%m-%d)-$(shell git rev-parse --short HEAD)
+IMG ?= ${DOCKER_IMAGE_REPO}:${DOCKER_IMAGE_TAG}
+IMG_MAIN ?= ${DOCKER_IMAGE_REPO}:main
 DOCKER_IMAGE := hatrack
 DOCKER_TAG := latest
+
+# Build variables for embedding in binary
+VERSION ?= $(shell cat VERSION)
+REVISION ?= $(shell git rev-parse HEAD)
+BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+BUILDUSER ?= $(shell whoami)@$(shell hostname)
+BUILDDATE ?= $(shell date +%Y%m%d-%H:%M:%S)
+
+# Container tool (docker or podman)
+CONTAINER_TOOL ?= docker
+
+# Multi-platform build support
+PLATFORMS ?= linux/arm64,linux/amd64
 
 help:
 	@echo "Available targets:"
@@ -20,7 +38,9 @@ help:
 	@echo "  bench-profile  - Run benchmarks with CPU profiling"
 	@echo "  check          - Run clippy, tests, and build (CI-style)"
 	@echo "  clean          - Clean build artifacts"
-	@echo "  docker-build   - Build Docker image"
+	@echo "  docker-build   - Build Docker image (local, tagged as latest)"
+	@echo "  docker-push    - Push Docker image to registry"
+	@echo "  docker-buildx  - Build and push multi-platform image"
 	@echo "  docker-run     - Run Docker container"
 	@echo "  all            - Run clippy, build release, and build Docker image"
 
@@ -77,7 +97,45 @@ clean:
 	cargo clean
 
 docker-build:
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	@echo "Building Docker image with version information..."
+	@echo "  VERSION:   $(VERSION)"
+	@echo "  REVISION:  $(REVISION)"
+	@echo "  BRANCH:    $(BRANCH)"
+	@echo "  BUILDUSER: $(BUILDUSER)"
+	@echo "  BUILDDATE: $(BUILDDATE)"
+	$(CONTAINER_TOOL) build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg REVISION=$(REVISION) \
+		--build-arg BRANCH=$(BRANCH) \
+		--build-arg BUILDUSER=$(BUILDUSER) \
+		--build-arg BUILDDATE=$(BUILDDATE) \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG) \
+		-t ${IMG} .
+
+docker-push: ## Push docker image to registry.
+	$(CONTAINER_TOOL) push ${IMG}
+
+docker-buildx: ## Build and push multi-platform image for cross-platform support
+	@echo "Building and pushing multi-platform Docker image..."
+	@echo "  VERSION:   $(VERSION)"
+	@echo "  REVISION:  $(REVISION)"
+	@echo "  BRANCH:    $(BRANCH)"
+	@echo "  PLATFORMS: $(PLATFORMS)"
+	# Copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+	- $(CONTAINER_TOOL) buildx create --name hatrack-builder
+	$(CONTAINER_TOOL) buildx use hatrack-builder
+	$(CONTAINER_TOOL) buildx build --push \
+		--platform=$(PLATFORMS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg REVISION=$(REVISION) \
+		--build-arg BRANCH=$(BRANCH) \
+		--build-arg BUILDUSER=$(BUILDUSER) \
+		--build-arg BUILDDATE=$(BUILDDATE) \
+		--tag ${IMG} --tag ${IMG_MAIN} \
+		-f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx rm hatrack-builder
+	rm Dockerfile.cross
 
 docker-run:
 	docker run --rm -p 8080:8080 -p 8081:8081 $(DOCKER_IMAGE):$(DOCKER_TAG)

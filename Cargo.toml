@@ -48,6 +48,13 @@ lto = true
 codegen-units = 1
 debug = true
 
+# Docker-friendly release profile with less aggressive optimizations
+# to avoid OOM during builds in memory-constrained environments
+[profile.release-docker]
+inherits = "release"
+lto = "thin"  # Use thin LTO instead of full LTO - much less memory
+codegen-units = 16  # More parallelism, less memory per unit
+
 [profile.bench]
 inherits = "release"
 debug = true
