@@ -21,10 +21,12 @@ struct ClusterState {
     failback_started: Option<Instant>,
     /// Last time the primary was accepted while a secondary is still active.
     failback_primary_last_seen: Option<Instant>,
+    /// Cached ranked replica indices for this cluster (computed once).
+    ranked_indices: Vec<usize>,
 }
 
 impl ClusterState {
-    fn new() -> Self {
+    fn new(ranked_indices: Vec<usize>) -> Self {
         let now = Instant::now();
 
         Self {
@@ -33,6 +35,7 @@ impl ClusterState {
             last_touched: now,
             failback_started: None,
             failback_primary_last_seen: None,
+            ranked_indices,
         }
     }
 
@@ -52,16 +55,16 @@ impl ClusterState {
     fn should_accept(
         &mut self,
         incoming_replica_id: &str,
-        ranked: &[usize],
         replicas: &[Replica],
         silence_timeout: Duration,
     ) -> bool {
-        self.last_touched = Instant::now();
+        let now = Instant::now();
+        self.last_touched = now;
 
         // If active replica has gone quiet, move to next ranked replica.
         if self.last_seen.elapsed() > silence_timeout {
-            self.current_rank = (self.current_rank + 1).min(ranked.len() - 1);
-            self.last_seen = Instant::now();
+            self.current_rank = (self.current_rank + 1).min(self.ranked_indices.len() - 1);
+            self.last_seen = now;
             self.clear_failback();
         }
 
@@ -69,19 +72,18 @@ impl ClusterState {
             self.expire_stale_failback(silence_timeout);
         }
 
-        let primary_replica = &replicas[ranked[0]].id;
-        let active_replica = &replicas[ranked[self.current_rank]].id;
+        let primary_replica = &replicas[self.ranked_indices[0]].id;
+        let active_replica = &replicas[self.ranked_indices[self.current_rank]].id;
 
         // Prefer primary if it comes back.
         if incoming_replica_id == primary_replica {
             if self.current_rank == 0 {
-                self.last_seen = Instant::now();
+                self.last_seen = now;
                 self.clear_failback();
                 return true;
             }
 
             // Accept primary during probation so both replicas may forward briefly.
-            let now = Instant::now();
             if self
                 .failback_primary_last_seen
                 .is_none_or(|last| last.elapsed() > silence_timeout)
@@ -103,7 +105,7 @@ impl ClusterState {
         }
 
         if incoming_replica_id == active_replica {
-            self.last_seen = Instant::now();
+            self.last_seen = now;
             true
         } else {
             false
@@ -113,7 +115,7 @@ impl ClusterState {
 
 #[derive(Debug)]
 pub struct ReplicaSelector {
-    replicas: Vec<Replica>,
+    pub(crate) replicas: Vec<Replica>,
     clusters: DashMap<String, ClusterState>,
     silence_timeout: Duration,
     idle_ttl: Duration,
@@ -138,16 +140,18 @@ impl ReplicaSelector {
     }
 
     pub fn should_accept(&self, cluster: &str, incoming_replica_id: &str) -> bool {
-        let ranked = self.ranked_replica_indices(cluster);
+        use dashmap::mapref::entry::Entry;
 
-        let mut state = self
-            .clusters
-            .entry(cluster.to_owned())
-            .or_insert_with(ClusterState::new);
+        let mut state = match self.clusters.entry(cluster.to_owned()) {
+            Entry::Occupied(entry) => entry.into_ref(),
+            Entry::Vacant(entry) => {
+                let ranked = self.ranked_replica_indices(cluster);
+                entry.insert(ClusterState::new(ranked))
+            }
+        };
 
         state.should_accept(
             incoming_replica_id,
-            &ranked,
             &self.replicas,
             self.silence_timeout,
         )
@@ -169,16 +173,28 @@ impl ReplicaSelector {
         xxh3_64(replica_id.as_bytes()) ^ xxh3_64(cluster.as_bytes())
     }
 
-    fn ranked_replica_indices(&self, cluster: &str) -> Vec<usize> {
-        let mut ranked: Vec<usize> = (0..self.replicas.len()).collect();
+    pub fn ranked_replica_indices(&self, cluster: &str) -> Vec<usize> {
+        // Fast path for HA pairs (most common case in production)
+        if self.replicas.len() == 2 {
+            let w0 = Self::hrw_weight(&self.replicas[0].id, cluster);
+            let w1 = Self::hrw_weight(&self.replicas[1].id, cluster);
+            return if w0 > w1 { vec![0, 1] } else { vec![1, 0] };
+        }
 
-        ranked.sort_by(|&a, &b| {
-            Self::hrw_weight(&self.replicas[b].id, cluster)
-                .cmp(&Self::hrw_weight(&self.replicas[a].id, cluster))
-                .then_with(|| self.replicas[a].id.cmp(&self.replicas[b].id))
+        // General case: cache weights to avoid recomputation during sort
+        let mut weights: Vec<(usize, u64)> = self.replicas
+            .iter()
+            .enumerate()
+            .map(|(idx, replica)| (idx, Self::hrw_weight(&replica.id, cluster)))
+            .collect();
+
+        weights.sort_by(|(a_idx, a_weight), (b_idx, b_weight)| {
+            b_weight
+                .cmp(a_weight)
+                .then_with(|| self.replicas[*a_idx].id.cmp(&self.replicas[*b_idx].id))
         });
 
-        ranked
+        weights.into_iter().map(|(idx, _)| idx).collect()
     }
 }
 
@@ -199,3 +215,7 @@ pub fn spawn_idle_cluster_eviction(selector: Arc<ReplicaSelector>, interval: Dur
         }
     });
 }
+
+#[cfg(test)]
+#[path = "replica_selector_test.rs"]
+mod replica_selector_test;

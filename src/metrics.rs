@@ -103,28 +103,28 @@ impl ProxyMetrics {
     }
 
     pub fn record_server_request(&self, method: &str, code: u16, duration: Duration) {
-        let lset = &HttpRequestLabels {
+        let lset = HttpRequestLabels {
             method: method.to_owned(),
-            code: code.to_string(),
+            code: itoa::Buffer::new().format(code).to_owned(),
         };
 
-        self.server_requests.get_or_create(lset).inc();
+        self.server_requests.get_or_create(&lset).inc();
 
         self.server_requests_duration_seconds
-            .get_or_create(lset)
+            .get_or_create(&lset)
             .observe(duration.as_secs_f64());
     }
 
     pub fn record_client_request(&self, method: &str, code: u16, duration: Duration) {
-        let lset = &HttpRequestLabels {
+        let lset = HttpRequestLabels {
             method: method.to_owned(),
-            code: code.to_string(),
+            code: itoa::Buffer::new().format(code).to_owned(),
         };
 
-        self.client_requests.get_or_create(lset).inc();
+        self.client_requests.get_or_create(&lset).inc();
 
         self.client_requests_duration_seconds
-            .get_or_create(lset)
+            .get_or_create(&lset)
             .observe(duration.as_secs_f64());
     }
 

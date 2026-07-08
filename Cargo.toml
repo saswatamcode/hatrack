@@ -20,7 +20,34 @@ url = "2.5.8"
 xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
 futures-util = "0.3.32"
 http-body-util = "0.1.3"
+itoa = "1.0"
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6.0", features = [
+    "profiling",
+    "unprefixed_malloc_on_supported_platforms",
+] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+pprof = { version = "0.14", features = [
+    "flamegraph",
+    "criterion",
+    "prost-codec",
+] }
+
+[[bench]]
+name = "replica_selector"
+harness = false
+
+[[bench]]
+name = "proxy_handler"
+harness = false
 
 [profile.release]
 lto = true
 codegen-units = 1
+debug = true
+
+[profile.bench]
+inherits = "release"
+debug = true

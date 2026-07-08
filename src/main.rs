@@ -3,6 +3,10 @@ mod metrics;
 mod replica_selector;
 mod util;
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use crate::http::HTTPClientConfig;
 use crate::http::HttpClient;
 use crate::http::ProxyBody;
@@ -110,17 +114,19 @@ async fn metrics_handler(
 async fn proxy_handler(State(state): State<AppState>, req: Request) -> Response<Body> {
     state.metrics.connection_opened();
     let start = Instant::now();
-    let method: String = req.method().as_str().to_owned();
+    let method = req.method().clone();
     let response = proxy(&state, req).await;
-    state
-        .metrics
-        .record_server_request(&method, response.status().as_u16(), start.elapsed());
+    state.metrics.record_server_request(
+        method.as_str(),
+        response.status().as_u16(),
+        start.elapsed(),
+    );
     state.metrics.connection_closed();
     response
 }
 
 async fn proxy(state: &AppState, req: Request) -> Response<Body> {
-    let method = req.method().as_str().to_owned();
+    let method = req.method().clone();
     let path_and_query = req
         .uri()
         .path_and_query()
@@ -149,9 +155,7 @@ async fn proxy(state: &AppState, req: Request) -> Response<Body> {
         }
     };
 
-    let accepted = state
-        .replica_selector
-        .should_accept(cluster, replica_id);
+    let accepted = state.replica_selector.should_accept(cluster, replica_id);
 
     if !accepted {
         debug!(%cluster, %replica_id, "dropping inactive replica request");
@@ -185,7 +189,7 @@ async fn proxy(state: &AppState, req: Request) -> Response<Body> {
     let upstream_resp = match state.client.request(upstream_req).await {
         Ok(response) => {
             state.metrics.record_client_request(
-                &method,
+                method.as_str(),
                 response.status().as_u16(),
                 client_start.elapsed(),
             );
@@ -194,7 +198,7 @@ async fn proxy(state: &AppState, req: Request) -> Response<Body> {
         Err(error) => {
             state
                 .metrics
-                .record_client_error(&method, client_start.elapsed());
+                .record_client_error(method.as_str(), client_start.elapsed());
             error!(%error, "upstream request failed");
             return empty_response(StatusCode::BAD_GATEWAY);
         }
@@ -275,3 +279,7 @@ async fn main() -> Result<(), BoxError> {
     info!("shutdown complete");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "main_test.rs"]
+mod main_test;

@@ -74,7 +74,7 @@ impl HTTPClientConfig {
 }
 
 pub fn streaming_body_from_axum(body: Body) -> ProxyBody {
-    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(8);
+    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(32);
 
     tokio::spawn(async move {
         let mut data = body.into_data_stream();
