@@ -1,4 +1,4 @@
-.PHONY: help build build-release clippy clippy-lib clippy-strict test clean docker-build docker-run bench bench-baseline bench-compare bench-profile bench-heap all check
+.PHONY: help build build-release clippy clippy-lib clippy-strict test fmt fmt-check clean docker-build docker-run bench bench-baseline bench-compare bench-profile bench-heap all check
 
 BINARY_NAME := hatrack
 DOCKER_IMAGE := hatrack
@@ -12,6 +12,8 @@ help:
 	@echo "  clippy-lib     - Run clippy on library only"
 	@echo "  clippy-strict  - Run clippy with warnings as errors"
 	@echo "  test           - Run tests"
+	@echo "  fmt            - Format code using rustfmt"
+	@echo "  fmt-check      - Check code formatting without modifying files"
 	@echo "  bench          - Run all criterion benchmarks"
 	@echo "  bench-baseline - Save current performance as baseline"
 	@echo "  bench-compare  - Compare against saved baseline"
@@ -39,6 +41,12 @@ clippy-strict:
 
 test:
 	cargo test
+
+fmt:
+	cargo fmt
+
+fmt-check:
+	cargo fmt -- --check
 
 bench:
 	cargo bench --bench replica_selector

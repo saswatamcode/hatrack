@@ -150,11 +150,7 @@ impl ReplicaSelector {
             }
         };
 
-        state.should_accept(
-            incoming_replica_id,
-            &self.replicas,
-            self.silence_timeout,
-        )
+        state.should_accept(incoming_replica_id, &self.replicas, self.silence_timeout)
     }
 
     pub fn evict_idle_clusters(&self) {
@@ -182,7 +178,8 @@ impl ReplicaSelector {
         }
 
         // General case: cache weights to avoid recomputation during sort
-        let mut weights: Vec<(usize, u64)> = self.replicas
+        let mut weights: Vec<(usize, u64)> = self
+            .replicas
             .iter()
             .enumerate()
             .map(|(idx, replica)| (idx, Self::hrw_weight(&replica.id, cluster)))
