@@ -19,7 +19,7 @@ fn bench_should_accept_single_cluster(c: &mut Criterion) {
     ];
 
     let selector: Arc<ReplicaSelector> = Arc::new(
-        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30)).unwrap(),
+        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None).unwrap(),
     );
 
     c.bench_function("should_accept_single_cluster", |b| {
@@ -40,7 +40,7 @@ fn bench_should_accept_many_clusters(c: &mut Criterion) {
     ];
 
     let selector = Arc::new(
-        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30)).unwrap(),
+        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None).unwrap(),
     );
 
     let cluster_names: Vec<String> = (0..100).map(|i| format!("cluster-{}", i)).collect();
@@ -66,7 +66,7 @@ fn bench_should_accept_varying_replica_counts(c: &mut Criterion) {
             .collect();
 
         let selector = Arc::new(
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30))
+            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None)
                 .unwrap(),
         );
 
@@ -94,7 +94,7 @@ fn bench_ranked_replica_indices(c: &mut Criterion) {
     ];
 
     let selector =
-        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30)).unwrap();
+        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None).unwrap();
 
     c.bench_function("ranked_replica_indices", |b| {
         b.iter(|| selector.ranked_replica_indices(black_box("test-cluster")));
@@ -112,7 +112,7 @@ fn bench_ranked_replica_indices_varying_counts(c: &mut Criterion) {
             .collect();
 
         let selector =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30))
+            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None)
                 .unwrap();
 
         group.bench_with_input(

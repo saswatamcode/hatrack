@@ -11,6 +11,33 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 
+#[derive(Clone)]
+pub struct ReplicaSelectorMetrics {
+    failovers_total: Counter,
+    failbacks_total: Counter,
+    idle_evictions_total: Counter,
+}
+
+impl std::fmt::Debug for ReplicaSelectorMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplicaSelectorMetrics").finish()
+    }
+}
+
+impl ReplicaSelectorMetrics {
+    pub fn record_failover(&self) {
+        self.failovers_total.inc();
+    }
+
+    pub fn record_failback(&self) {
+        self.failbacks_total.inc();
+    }
+
+    pub fn record_idle_evictions(&self, count: u64) {
+        self.idle_evictions_total.inc_by(count);
+    }
+}
+
 fn new_http_histogram() -> Histogram {
     Histogram::new(exponential_buckets(0.005, 2.0, 12))
 }
@@ -29,6 +56,7 @@ pub struct ProxyMetrics {
     client_requests: Family<HttpRequestLabels, Counter>,
     client_requests_duration_seconds: Family<HttpRequestLabels, Histogram>,
     server_connections_active: Gauge,
+    replica_selector_metrics: ReplicaSelectorMetrics,
 }
 
 impl ProxyMetrics {
@@ -78,6 +106,33 @@ impl ProxyMetrics {
             server_connections_active.clone(),
         );
 
+        let failovers_total = Counter::default();
+        registry.register(
+            "replica_selector_failovers_total",
+            "Total failover events where the active replica went silent and a secondary took over",
+            failovers_total.clone(),
+        );
+
+        let failbacks_total = Counter::default();
+        registry.register(
+            "replica_selector_failbacks_total",
+            "Total failback events where the primary replica recovered after probation",
+            failbacks_total.clone(),
+        );
+
+        let idle_evictions_total = Counter::default();
+        registry.register(
+            "replica_selector_idle_evictions_total",
+            "Total idle cluster states evicted from the replica selector",
+            idle_evictions_total.clone(),
+        );
+
+        let replica_selector_metrics = ReplicaSelectorMetrics {
+            failovers_total,
+            failbacks_total,
+            idle_evictions_total,
+        };
+
         Ok(Self {
             registry: Arc::new(registry),
             server_requests,
@@ -85,6 +140,7 @@ impl ProxyMetrics {
             client_requests,
             client_requests_duration_seconds,
             server_connections_active,
+            replica_selector_metrics,
         })
     }
 
@@ -130,5 +186,9 @@ impl ProxyMetrics {
 
     pub fn record_client_error(&self, method: &str, duration: Duration) {
         self.record_client_request(method, 0, duration);
+    }
+
+    pub fn replica_selector_metrics(&self) -> ReplicaSelectorMetrics {
+        self.replica_selector_metrics.clone()
     }
 }

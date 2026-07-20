@@ -1,3 +1,4 @@
+use crate::metrics::ReplicaSelectorMetrics;
 use crate::util::error::BoxError;
 
 use dashmap::DashMap;
@@ -119,6 +120,7 @@ pub struct ReplicaSelector {
     clusters: DashMap<String, ClusterState>,
     silence_timeout: Duration,
     idle_ttl: Duration,
+    metrics: Option<ReplicaSelectorMetrics>,
 }
 
 impl ReplicaSelector {
@@ -126,6 +128,7 @@ impl ReplicaSelector {
         replicas: Vec<Replica>,
         silence_timeout: Duration,
         idle_ttl: Duration,
+        metrics: Option<ReplicaSelectorMetrics>,
     ) -> Result<Self, BoxError> {
         if replicas.is_empty() {
             return Err("at least one replica ordinal is required".into());
@@ -136,6 +139,7 @@ impl ReplicaSelector {
             clusters: DashMap::new(),
             silence_timeout,
             idle_ttl,
+            metrics,
         })
     }
 
@@ -150,14 +154,32 @@ impl ReplicaSelector {
             }
         };
 
-        state.should_accept(incoming_replica_id, &self.replicas, self.silence_timeout)
+        let prev_rank = state.current_rank;
+        let accepted = state.should_accept(incoming_replica_id, &self.replicas, self.silence_timeout);
+
+        if let Some(m) = &self.metrics {
+            if state.current_rank > prev_rank {
+                m.record_failover();
+            } else if prev_rank > 0 && state.current_rank == 0 {
+                m.record_failback();
+            }
+        }
+
+        accepted
     }
 
     pub fn evict_idle_clusters(&self) {
-        let idle_ttl = self.idle_ttl;
+        let before = self.clusters.len();
 
         self.clusters
-            .retain(|_, state| state.last_touched.elapsed() <= idle_ttl);
+            .retain(|_, state| state.last_touched.elapsed() <= self.idle_ttl);
+
+        if let Some(m) = &self.metrics {
+            let evicted = before.saturating_sub(self.clusters.len()) as u64;
+            if evicted > 0 {
+                m.record_idle_evictions(evicted);
+            }
+        }
     }
 
     pub fn cluster_count(&self) -> usize {

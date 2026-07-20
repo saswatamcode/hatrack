@@ -1,6 +1,7 @@
 // Mostly for criterion benchmarks
 
 pub mod http;
+pub mod metrics;
 pub mod replica_selector;
 
 #[allow(dead_code)]

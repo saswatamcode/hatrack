@@ -50,7 +50,7 @@ fn bench_proxy_decision_path(c: &mut Criterion) {
     ];
 
     let selector = Arc::new(
-        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30)).unwrap(),
+        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None).unwrap(),
     );
 
     let req = create_test_request("test-cluster", "prometheus-replica-0");
@@ -75,7 +75,7 @@ fn bench_proxy_decision_path_many_clusters(c: &mut Criterion) {
     ];
 
     let selector = Arc::new(
-        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30)).unwrap(),
+        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None).unwrap(),
     );
 
     let requests: Vec<Request> = (0..100)
@@ -105,7 +105,7 @@ fn bench_proxy_decision_with_rejection(c: &mut Criterion) {
     ];
 
     let selector = Arc::new(
-        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30)).unwrap(),
+        ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(30), None).unwrap(),
     );
 
     let active_req = create_test_request("test-cluster", "prometheus-replica-0");

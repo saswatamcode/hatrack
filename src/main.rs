@@ -257,6 +257,7 @@ async fn main() -> Result<(), BoxError> {
         replicas,
         inactive_window,
         inactive_window,
+        Some(metrics.replica_selector_metrics()),
     )?);
     spawn_idle_cluster_eviction(Arc::clone(&replica_selector), inactive_window);
 

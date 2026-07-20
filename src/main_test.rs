@@ -66,6 +66,7 @@ mod tests {
                 replicas,
                 Duration::from_secs(config.inactive_window_seconds),
                 Duration::from_secs(config.inactive_window_seconds),
+                None,
             )
             .unwrap(),
         );
