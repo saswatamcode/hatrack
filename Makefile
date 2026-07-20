@@ -1,4 +1,4 @@
-.PHONY: help build build-release clippy clippy-lib clippy-strict test fmt fmt-check clean docker-build docker-push docker-buildx docker-run bench bench-baseline bench-compare bench-profile bench-heap all check
+.PHONY: help build build-release clippy clippy-lib clippy-strict test test-e2e fmt fmt-check clean docker-build docker-push docker-buildx docker-run bench bench-baseline bench-compare bench-profile bench-heap all check
 
 # Binary and Docker configuration
 BINARY_NAME := hatrack
@@ -30,6 +30,7 @@ help:
 	@echo "  clippy-lib     - Run clippy on library only"
 	@echo "  clippy-strict  - Run clippy with warnings as errors"
 	@echo "  test           - Run tests"
+	@echo "  test-e2e       - Build image and run e2e tests (requires Docker)"
 	@echo "  fmt            - Format code using rustfmt"
 	@echo "  fmt-check      - Check code formatting without modifying files"
 	@echo "  bench          - Run all criterion benchmarks"
@@ -60,7 +61,13 @@ clippy-strict:
 	cargo clippy --all-targets --all-features -- -D warnings
 
 test:
-	cargo test
+	cargo test --lib --bins
+
+DOCKER_HOST ?= $(shell docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)
+
+test-e2e: docker-build
+	$(CONTAINER_TOOL) tag $(DOCKER_IMAGE):$(DOCKER_TAG) hatrack:e2e-test
+	DOCKER_HOST=$(DOCKER_HOST) cargo test --test e2e -- --nocapture
 
 fmt:
 	cargo fmt

@@ -155,7 +155,8 @@ impl ReplicaSelector {
         };
 
         let prev_rank = state.current_rank;
-        let accepted = state.should_accept(incoming_replica_id, &self.replicas, self.silence_timeout);
+        let accepted =
+            state.should_accept(incoming_replica_id, &self.replicas, self.silence_timeout);
 
         if let Some(m) = &self.metrics {
             if state.current_rank > prev_rank {

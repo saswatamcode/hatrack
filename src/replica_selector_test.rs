@@ -19,7 +19,12 @@ mod tests {
 
     #[test]
     fn test_new_requires_at_least_one_replica() {
-        let result = ReplicaSelector::new(vec![], Duration::from_secs(30), Duration::from_secs(60), None);
+        let result = ReplicaSelector::new(
+            vec![],
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        );
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -30,17 +35,25 @@ mod tests {
     #[test]
     fn test_new_with_valid_replicas() {
         let replicas = create_test_replicas();
-        let result =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(60), None);
+        let result = ReplicaSelector::new(
+            replicas,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_should_accept_initial_primary_replica() {
         let replicas = create_test_replicas();
-        let selector =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(60), None)
-                .unwrap();
+        let selector = ReplicaSelector::new(
+            replicas,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        )
+        .unwrap();
 
         let cluster = "test-cluster";
         let primary_id = selector
@@ -55,9 +68,13 @@ mod tests {
     #[test]
     fn test_should_reject_non_primary_when_primary_active() {
         let replicas = create_test_replicas();
-        let selector =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(60), None)
-                .unwrap();
+        let selector = ReplicaSelector::new(
+            replicas,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        )
+        .unwrap();
 
         let cluster = "test-cluster";
         let ranked = selector.ranked_replica_indices(cluster);
@@ -131,9 +148,13 @@ mod tests {
     #[test]
     fn test_multiple_independent_clusters() {
         let replicas = create_test_replicas();
-        let selector =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(60), None)
-                .unwrap();
+        let selector = ReplicaSelector::new(
+            replicas,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        )
+        .unwrap();
 
         let cluster1 = "cluster-1";
         let cluster2 = "cluster-2";
@@ -156,7 +177,8 @@ mod tests {
     fn test_evict_idle_clusters() {
         let replicas = create_test_replicas();
         let idle_ttl = Duration::from_millis(100);
-        let selector = ReplicaSelector::new(replicas, Duration::from_secs(30), idle_ttl, None).unwrap();
+        let selector =
+            ReplicaSelector::new(replicas, Duration::from_secs(30), idle_ttl, None).unwrap();
 
         let cluster = "test-cluster";
         let ranked = selector.ranked_replica_indices(cluster);
@@ -177,9 +199,13 @@ mod tests {
     #[test]
     fn test_hrw_weight_consistency() {
         let replicas = create_test_replicas();
-        let selector =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(60), None)
-                .unwrap();
+        let selector = ReplicaSelector::new(
+            replicas,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        )
+        .unwrap();
 
         let cluster = "test-cluster";
 
@@ -193,9 +219,13 @@ mod tests {
     #[test]
     fn test_hrw_weight_distribution() {
         let replicas = create_test_replicas();
-        let selector =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(60), None)
-                .unwrap();
+        let selector = ReplicaSelector::new(
+            replicas,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        )
+        .unwrap();
 
         // Different clusters should potentially have different primaries
         let mut primary_distribution = std::collections::HashMap::new();
@@ -226,9 +256,13 @@ mod tests {
             },
         ];
 
-        let selector =
-            ReplicaSelector::new(replicas, Duration::from_secs(30), Duration::from_secs(60), None)
-                .unwrap();
+        let selector = ReplicaSelector::new(
+            replicas,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            None,
+        )
+        .unwrap();
 
         // Determine primary for cluster-a
         let ranked_a = selector.ranked_replica_indices("cluster-a");
