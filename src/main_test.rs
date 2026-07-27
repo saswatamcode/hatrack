@@ -25,6 +25,7 @@ mod tests {
             ordinal_grouping_header: "cluster".to_string(),
             ordinal_header: "HATRACK-ORDINAL".to_string(),
             possible_ordinals: vec!["replica-0".to_string(), "replica-1".to_string()],
+            allow_passthrough: false,
         }
     }
 
@@ -468,6 +469,141 @@ mod tests {
                 test.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_passthrough_missing_both_headers() {
+        let (upstream_addr, captured_paths) = start_mock_upstream().await;
+
+        let mut config = create_test_config();
+        config.allow_passthrough = true;
+        config.upstream_url =
+            UpstreamTarget::parse_url(&format!("http://{upstream_addr}")).unwrap();
+        let state = create_test_app_state(config);
+
+        let req = Request::builder()
+            .uri("/api/v1/write")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy(&state, req).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "passthrough request should be forwarded to upstream"
+        );
+
+        let paths = captured_paths.lock().unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], "/api/v1/write");
+    }
+
+    #[tokio::test]
+    async fn test_proxy_passthrough_disabled_missing_headers() {
+        let config = create_test_config();
+        assert!(!config.allow_passthrough);
+        let state = create_test_app_state(config);
+
+        let req = Request::builder()
+            .uri("/api/v1/write")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy(&state, req).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "missing headers should return 400 when passthrough is disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_passthrough_partial_headers_still_rejected() {
+        let mut config = create_test_config();
+        config.allow_passthrough = true;
+        let state = create_test_app_state(config.clone());
+
+        let tests = vec![
+            ProxyTestCase {
+                name: "only cluster header",
+                cluster_header: Some("test-cluster"),
+                ordinal_header: None,
+                expected_status: StatusCode::BAD_REQUEST,
+                description: "partial headers should still return 400 even with passthrough",
+            },
+            ProxyTestCase {
+                name: "only ordinal header",
+                cluster_header: None,
+                ordinal_header: Some("replica-0"),
+                expected_status: StatusCode::BAD_REQUEST,
+                description: "partial headers should still return 400 even with passthrough",
+            },
+        ];
+
+        for test in tests {
+            let mut req = Request::builder().uri("/test");
+
+            if let Some(cluster) = test.cluster_header {
+                req = req.header(&config.ordinal_grouping_header, cluster);
+            }
+
+            if let Some(ordinal) = test.ordinal_header {
+                req = req.header(&config.ordinal_header, ordinal);
+            }
+
+            let request = req.body(Body::empty()).unwrap();
+            let response = proxy(&state, request).await;
+
+            assert_eq!(
+                response.status(),
+                test.expected_status,
+                "test '{}' failed: {}",
+                test.name,
+                test.description
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_passthrough_ha_requests_still_deduplicated() {
+        let mut config = create_test_config();
+        config.allow_passthrough = true;
+        let state = create_test_app_state(config.clone());
+
+        let cluster = "test-cluster";
+        let ranked = state.replica_selector.ranked_replica_indices(cluster);
+        let primary_id = &state.replica_selector.replicas[ranked[0]].id;
+        let secondary_id = &state.replica_selector.replicas[ranked[1]].id;
+
+        // Primary accepted (hits upstream, gets BAD_GATEWAY since no real upstream)
+        let req = Request::builder()
+            .uri("/test")
+            .header(&config.ordinal_grouping_header, cluster)
+            .header(&config.ordinal_header, primary_id.as_str())
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy(&state, req).await;
+        assert_ne!(
+            response.status(),
+            StatusCode::ACCEPTED,
+            "primary should not be rejected even with passthrough enabled"
+        );
+
+        // Secondary still rejected
+        let req = Request::builder()
+            .uri("/test")
+            .header(&config.ordinal_grouping_header, cluster)
+            .header(&config.ordinal_header, secondary_id.as_str())
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy(&state, req).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::ACCEPTED,
+            "secondary should still be rejected when passthrough is enabled"
+        );
     }
 
     #[test]

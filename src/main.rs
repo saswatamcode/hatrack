@@ -75,6 +75,10 @@ pub struct ProxyConfig {
         default_value = "prometheus-replica-0,prometheus-replica-1"
     )]
     pub possible_ordinals: Vec<String>,
+
+    /// Allow requests without HA ordinal headers to pass through directly to upstream.
+    #[arg(long, default_value = "false")]
+    pub allow_passthrough: bool,
 }
 
 #[derive(Clone)]
@@ -133,33 +137,24 @@ async fn proxy(state: &AppState, req: Request) -> Response<Body> {
         .map(|pq| pq.as_str())
         .unwrap_or("/");
 
-    let cluster = match header_value(&req, &state.proxy_config.ordinal_grouping_header) {
-        Some(value) => value,
-        None => {
-            debug!(
-                header = %state.proxy_config.ordinal_grouping_header,
-                "missing ordinal grouping header"
-            );
+    let cluster = header_value(&req, &state.proxy_config.ordinal_grouping_header);
+    let replica_id = header_value(&req, &state.proxy_config.ordinal_header);
+
+    match (cluster, replica_id) {
+        (Some(cluster), Some(replica_id)) => {
+            if !state.replica_selector.should_accept(cluster, replica_id) {
+                debug!(%cluster, %replica_id, "dropping inactive replica request");
+                return empty_response(StatusCode::ACCEPTED);
+            }
+        }
+        (None, None) if state.proxy_config.allow_passthrough => {
+            state.metrics.record_passthrough();
+            debug!(path = %path_and_query, "passthrough request (no HA headers)");
+        }
+        _ => {
+            debug!("missing required HA header(s)");
             return empty_response(StatusCode::BAD_REQUEST);
         }
-    };
-
-    let replica_id = match header_value(&req, &state.proxy_config.ordinal_header) {
-        Some(value) => value,
-        None => {
-            debug!(
-                header = %state.proxy_config.ordinal_header,
-                "missing ordinal header"
-            );
-            return empty_response(StatusCode::BAD_REQUEST);
-        }
-    };
-
-    let accepted = state.replica_selector.should_accept(cluster, replica_id);
-
-    if !accepted {
-        debug!(%cluster, %replica_id, "dropping inactive replica request");
-        return empty_response(StatusCode::ACCEPTED);
     }
 
     let upstream_uri = match state.upstream_target.map_request(req.uri()) {
@@ -171,11 +166,9 @@ async fn proxy(state: &AppState, req: Request) -> Response<Body> {
     };
 
     debug!(
-        method = %req.method(),
+        method = %method,
         path = %path_and_query,
         upstream = %upstream_uri,
-        %cluster,
-        %replica_id,
         "forwarding request"
     );
 

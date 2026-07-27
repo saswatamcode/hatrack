@@ -56,6 +56,7 @@ pub struct ProxyMetrics {
     client_requests: Family<HttpRequestLabels, Counter>,
     client_requests_duration_seconds: Family<HttpRequestLabels, Histogram>,
     server_connections_active: Gauge,
+    passthrough_requests: Counter,
     replica_selector_metrics: ReplicaSelectorMetrics,
 }
 
@@ -106,6 +107,13 @@ impl ProxyMetrics {
             server_connections_active.clone(),
         );
 
+        let passthrough_requests = Counter::default();
+        registry.register(
+            "hatrack_passthrough_requests_total",
+            "Total requests forwarded without HA deduplication",
+            passthrough_requests.clone(),
+        );
+
         let failovers_total = Counter::default();
         registry.register(
             "replica_selector_failovers_total",
@@ -140,6 +148,7 @@ impl ProxyMetrics {
             client_requests,
             client_requests_duration_seconds,
             server_connections_active,
+            passthrough_requests,
             replica_selector_metrics,
         })
     }
@@ -182,6 +191,10 @@ impl ProxyMetrics {
         self.client_requests_duration_seconds
             .get_or_create(&lset)
             .observe(duration.as_secs_f64());
+    }
+
+    pub fn record_passthrough(&self) {
+        self.passthrough_requests.inc();
     }
 
     pub fn record_client_error(&self, method: &str, duration: Duration) {
