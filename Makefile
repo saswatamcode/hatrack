@@ -69,6 +69,10 @@ test-e2e: docker-build
 	$(CONTAINER_TOOL) tag $(DOCKER_IMAGE):$(DOCKER_TAG) hatrack:e2e-test
 	DOCKER_HOST=$(DOCKER_HOST) cargo test --test e2e -- --nocapture
 
+interactive-test: docker-build
+	$(CONTAINER_TOOL) tag $(DOCKER_IMAGE):$(DOCKER_TAG) hatrack:e2e-test
+	DOCKER_HOST=$(DOCKER_HOST) HATRACK_E2E_INTERACTIVE=true cargo test --test e2e -- --nocapture
+
 fmt:
 	cargo fmt
 

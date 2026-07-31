@@ -137,8 +137,174 @@ async fn wait_for_metric_with_label(
     }
 }
 
+/// Wait until the replica with the newest *sample* timestamp is `expected_replica`,
+/// and that sample is fresher than `after_unix`.
+///
+/// Instant-query `value.0` is the evaluation time (identical across series), so we
+/// query `timestamp(<metric>)` and compare the returned sample-time values instead.
+/// Stale secondary series may still appear within the lookback window after failback.
+async fn wait_for_newest_replica(
+    host: &str,
+    port: u16,
+    metric_query: &str,
+    expected_replica: &str,
+    after_unix: f64,
+    timeout: Duration,
+) -> Vec<PromQueryResult> {
+    let query = format!("timestamp({metric_query})");
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(results) = query_thanos(host, port, &query, false).await
+            && let Some(newest) = results.iter().max_by(|a, b| {
+                let ta = a.value.1.parse::<f64>().unwrap_or(f64::NAN);
+                let tb = b.value.1.parse::<f64>().unwrap_or(f64::NAN);
+                ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+        {
+            let newest_ts = newest.value.1.parse::<f64>().unwrap_or(f64::NAN);
+            if newest_ts > after_unix
+                && newest.metric.get("replica").map(|s| s.as_str()) == Some(expected_replica)
+            {
+                return results;
+            }
+        }
+        if start.elapsed() > timeout {
+            let latest = query_thanos(host, port, &query, false)
+                .await
+                .unwrap_or_default();
+            panic!(
+                "timed out waiting for newest sample of '{}' to be replica={} after unix {:.0} ({:?}); last timestamp() results: {:?}",
+                metric_query, expected_replica, after_unix, timeout, latest
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn wait_for_hatrack_counter(
+    host: &str,
+    port: u16,
+    metric_name: &str,
+    min_value: f64,
+    timeout: Duration,
+) -> f64 {
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(resp) = reqwest::get(format!("http://{host}:{port}/metrics")).await
+            && let Ok(body) = resp.text().await
+        {
+            for line in body.lines() {
+                if line.starts_with('#') {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                if let (Some(name), Some(val)) = (parts.next(), parts.next())
+                    && name == metric_name
+                    && let Ok(v) = val.parse::<f64>()
+                    && v >= min_value
+                {
+                    return v;
+                }
+            }
+        }
+        if start.elapsed() > timeout {
+            panic!("timed out waiting for {metric_name} >= {min_value} after {timeout:?}");
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// If `HATRACK_E2E_INTERACTIVE` is set, return how long to keep containers alive
+/// after assertions so a human can poke at them.
+///
+/// Accepted values:
+/// - unset / empty / `0` / `false` → no hold
+/// - `1` / `true` → default 10 minutes
+/// - positive integer → that many seconds
+fn interactive_hold_duration() -> Option<Duration> {
+    const DEFAULT_HOLD: Duration = Duration::from_secs(600);
+
+    match std::env::var("HATRACK_E2E_INTERACTIVE") {
+        Err(_) => None,
+        Ok(val) => {
+            let val = val.trim();
+            if val.is_empty() || val == "0" || val.eq_ignore_ascii_case("false") {
+                None
+            } else if val == "1" || val.eq_ignore_ascii_case("true") {
+                Some(DEFAULT_HOLD)
+            } else {
+                let secs: u64 = val.parse().unwrap_or_else(|_| {
+                    panic!(
+                        "HATRACK_E2E_INTERACTIVE must be seconds, true/1, or false/0 (got {val:?})"
+                    )
+                });
+                Some(Duration::from_secs(secs))
+            }
+        }
+    }
+}
+
+async fn host_port(
+    container: &testcontainers::ContainerAsync<GenericImage>,
+    port: ContainerPort,
+) -> String {
+    let host = container
+        .get_host()
+        .await
+        .expect("failed to get container host");
+    let mapped = container
+        .get_host_port_ipv4(port)
+        .await
+        .expect("failed to get mapped port");
+    format!("{host}:{mapped}")
+}
+
+/// Hold until `duration` elapses or the user interrupts (Ctrl+C / SIGTERM),
+/// so containers can still be dropped cleanly on manual termination.
+async fn interactive_hold(duration: Duration) {
+    let ctrl_c = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("failed to install Ctrl+C handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                eprintln!("failed to install SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = tokio::time::sleep(duration) => {
+            info!("interactive hold expired, tearing down containers");
+        }
+        _ = ctrl_c => {
+            eprintln!("interrupt received, tearing down containers");
+            info!("interactive hold interrupted, tearing down containers");
+        }
+        _ = terminate => {
+            eprintln!("terminate received, tearing down containers");
+            info!("interactive hold terminated, tearing down containers");
+        }
+    }
+}
+
 #[tokio::test]
-async fn test_ha_dedup_and_failover() {
+async fn test_ha_dedup_failover_and_failback() {
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .try_init();
@@ -383,6 +549,141 @@ async fn test_ha_dedup_and_failover() {
     );
 
     info!(replica = %secondary_replica, "phase 2 passed: failover verified");
+
+    // --- Phase 3: Failback ---
+    // Restart the primary. Hatrack accepts it during a silence-window probation,
+    // then switches active rank back to primary and rejects the secondary.
+    let failback_started_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_secs_f64();
+
+    info!(
+        primary = %primary_replica,
+        "restarting primary prometheus, expecting failback"
+    );
+
+    if primary_replica == "0" {
+        prom0.start().await.expect("failed to restart prom-0");
+    } else {
+        prom1.start().await.expect("failed to restart prom-1");
+    }
+
+    let hatrack_metrics_host = hatrack
+        .get_host()
+        .await
+        .expect("failed to get hatrack host")
+        .to_string();
+    let hatrack_metrics_port = hatrack
+        .get_host_port_ipv4(HATRACK_INTERNAL_PORT)
+        .await
+        .expect("failed to get hatrack metrics port");
+
+    // Failback completes after inactive_window (10s) of continuous primary traffic.
+    info!("waiting for failback (inactive_window=10s probation + buffer for new scrapes)");
+
+    let failbacks = wait_for_hatrack_counter(
+        &hatrack_metrics_host,
+        hatrack_metrics_port,
+        "replica_selector_failbacks_total",
+        1.0,
+        Duration::from_secs(90),
+    )
+    .await;
+    info!(failbacks, "hatrack reported failback");
+
+    // After failback, only the primary should keep advancing. Secondary series may
+    // still appear in the lookback window, but timestamp() must show primary newest.
+    let failback_results = wait_for_newest_replica(
+        &query_addr,
+        query_port,
+        "up{job=\"myself\"}",
+        &primary_replica,
+        failback_started_unix,
+        Duration::from_secs(60),
+    )
+    .await;
+
+    let newest = failback_results
+        .iter()
+        .max_by(|a, b| {
+            let ta = a.value.1.parse::<f64>().unwrap_or(f64::NAN);
+            let tb = b.value.1.parse::<f64>().unwrap_or(f64::NAN);
+            ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .expect("expected at least one series after failback");
+    let newest_ts: f64 = newest
+        .value
+        .1
+        .parse()
+        .expect("failed to parse timestamp() value");
+    assert_eq!(
+        newest.metric.get("replica").map(|s| s.as_str()),
+        Some(primary_replica.as_str()),
+        "expected newest thanos sample to revert to primary replica {}, got: {:?}",
+        primary_replica,
+        failback_results
+    );
+    assert!(
+        newest_ts > failback_started_unix,
+        "expected primary sample timestamp after failback start, got {} <= {}",
+        newest_ts,
+        failback_started_unix
+    );
+
+    // Secondary may still be in lookback, but its last sample must be older once
+    // hatrack stops forwarding it after probation.
+    if let Some(secondary) = failback_results
+        .iter()
+        .find(|r| r.metric.get("replica").map(|s| s.as_str()) == Some(secondary_replica))
+    {
+        let secondary_ts: f64 = secondary
+            .value
+            .1
+            .parse()
+            .expect("failed to parse secondary timestamp() value");
+        assert!(
+            newest_ts > secondary_ts,
+            "expected primary sample ({newest_ts}) newer than secondary ({secondary_ts}) after failback; results: {failback_results:?}"
+        );
+    }
+
+    info!(replica = %primary_replica, "phase 3 passed: failback verified via query");
+
+    if let Some(hold) = interactive_hold_duration() {
+        let thanos_query_http = host_port(&query, THANOS_HTTP_PORT).await;
+        let hatrack_proxy = host_port(&hatrack, HATRACK_PROXY_PORT).await;
+        let hatrack_metrics = host_port(&hatrack, HATRACK_INTERNAL_PORT).await;
+        let receive_http = host_port(&receive, THANOS_HTTP_PORT).await;
+        let receive_rw = host_port(&receive, THANOS_RW_PORT).await;
+        let prom0_http = format!("http://{}", host_port(&prom0, PROMETHEUS_PORT).await);
+        let prom1_http = format!("http://{}", host_port(&prom1, PROMETHEUS_PORT).await);
+
+        eprintln!();
+        eprintln!("=== HATRACK_E2E_INTERACTIVE ===");
+        eprintln!(
+            "Assertions passed; holding containers for {:?} so you can interact.",
+            hold
+        );
+        eprintln!("Docker network: {NETWORK}");
+        eprintln!("Container names: thanos-receive, hatrack, prom-0, prom-1, thanos-query");
+        eprintln!("  (primary prom-{primary_replica} failed over then failed back)");
+        eprintln!();
+        eprintln!("Host-mapped endpoints:");
+        eprintln!("  thanos-query:     http://{thanos_query_http}");
+        eprintln!("  hatrack proxy:    http://{hatrack_proxy}");
+        eprintln!("  hatrack metrics:  http://{hatrack_metrics}/metrics");
+        eprintln!("  thanos-receive:   http://{receive_http}  (remote-write http://{receive_rw})");
+        eprintln!("  prom-0:           {prom0_http}");
+        eprintln!("  prom-1:           {prom1_http}");
+        eprintln!();
+        eprintln!("Example: curl 'http://{thanos_query_http}/api/v1/query?query=up'");
+        eprintln!("Press Ctrl+C to tear down early, or wait for the hold to expire.");
+        eprintln!("==============================");
+        eprintln!();
+
+        interactive_hold(hold).await;
+    }
 
     // Cleanup happens automatically when containers are dropped.
     drop(query);
