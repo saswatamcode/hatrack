@@ -1,4 +1,11 @@
+use crate::http::empty_response;
 use crate::util::error::BoxError;
+use axum::{
+    body::Body,
+    extract::State,
+    http::{Method, Response, StatusCode, header},
+    response::IntoResponse,
+};
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
@@ -9,7 +16,7 @@ use prometheus_client::metrics::histogram::exponential_buckets;
 use prometheus_client::registry::Registry;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{error, warn};
 
 #[derive(Clone)]
 pub struct ReplicaSelectorMetrics {
@@ -72,7 +79,7 @@ impl ProxyMetrics {
 
         let server_requests = Family::default();
         registry.register(
-            "http_server_requests_total",
+            "http_server_requests",
             "Total inbound HTTP requests handled by the proxy",
             server_requests.clone(),
         );
@@ -87,7 +94,7 @@ impl ProxyMetrics {
 
         let client_requests = Family::default();
         registry.register(
-            "http_client_requests_total",
+            "http_client_requests",
             "Total outbound HTTP requests to the upstream",
             client_requests.clone(),
         );
@@ -109,28 +116,28 @@ impl ProxyMetrics {
 
         let passthrough_requests = Counter::default();
         registry.register(
-            "hatrack_passthrough_requests_total",
+            "hatrack_passthrough_requests",
             "Total requests forwarded without HA deduplication",
             passthrough_requests.clone(),
         );
 
         let failovers_total = Counter::default();
         registry.register(
-            "replica_selector_failovers_total",
+            "replica_selector_failovers",
             "Total failover events where the active replica went silent and a secondary took over",
             failovers_total.clone(),
         );
 
         let failbacks_total = Counter::default();
         registry.register(
-            "replica_selector_failbacks_total",
+            "replica_selector_failbacks",
             "Total failback events where the primary replica recovered after probation",
             failbacks_total.clone(),
         );
 
         let idle_evictions_total = Counter::default();
         registry.register(
-            "replica_selector_idle_evictions_total",
+            "replica_selector_idle_evictions",
             "Total idle cluster states evicted from the replica selector",
             idle_evictions_total.clone(),
         );
@@ -203,5 +210,30 @@ impl ProxyMetrics {
 
     pub fn replica_selector_metrics(&self) -> ReplicaSelectorMetrics {
         self.replica_selector_metrics.clone()
+    }
+}
+
+pub async fn handle_metrics(
+    State(metrics): State<Arc<ProxyMetrics>>,
+    method: Method,
+) -> Response<Body> {
+    if method != Method::GET {
+        return empty_response(StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    match metrics.encode() {
+        Ok(body) => (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            error!(error = %e, "failed to encode metrics");
+            empty_response(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }

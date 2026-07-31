@@ -1,5 +1,6 @@
 mod http;
 mod metrics;
+mod profiles;
 mod replica_selector;
 mod util;
 
@@ -7,13 +8,18 @@ mod util;
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "malloc_conf")]
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+
 use crate::http::HTTPClientConfig;
 use crate::http::HttpClient;
 use crate::http::ProxyBody;
 use crate::http::empty_response;
 use crate::http::header_value;
 use crate::http::streaming_body_from_axum;
-use crate::metrics::ProxyMetrics;
+use crate::metrics::{ProxyMetrics, handle_metrics};
+use crate::profiles::{handle_get_heap, handle_pprof_profile};
 use crate::replica_selector::Replica;
 use crate::replica_selector::ReplicaSelector;
 use crate::replica_selector::spawn_idle_cluster_eviction;
@@ -26,8 +32,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Request, State},
-    http::{Method, Response, StatusCode, header},
-    response::IntoResponse,
+    http::{Response, StatusCode},
     routing::{any, get},
 };
 use clap::Parser;
@@ -88,31 +93,6 @@ struct AppState {
     proxy_config: ProxyConfig,
     replica_selector: Arc<ReplicaSelector>,
     metrics: Arc<ProxyMetrics>,
-}
-
-async fn metrics_handler(
-    State(metrics): State<Arc<ProxyMetrics>>,
-    method: Method,
-) -> Response<Body> {
-    if method != Method::GET {
-        return empty_response(StatusCode::METHOD_NOT_ALLOWED);
-    }
-
-    match metrics.encode() {
-        Ok(body) => (
-            StatusCode::OK,
-            [(
-                header::CONTENT_TYPE,
-                "application/openmetrics-text; version=1.0.0; charset=utf-8",
-            )],
-            body,
-        )
-            .into_response(),
-        Err(e) => {
-            error!(error = %e, "failed to encode metrics");
-            empty_response(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
 }
 
 async fn proxy_handler(State(state): State<AppState>, req: Request) -> Response<Body> {
@@ -231,7 +211,9 @@ async fn main() -> Result<(), BoxError> {
     let metrics_for_server = metrics.clone();
     tokio::spawn(async move {
         let app = Router::new()
-            .route("/metrics", get(metrics_handler))
+            .route("/metrics", get(handle_metrics))
+            .route("/debug/pprof/allocs", get(handle_get_heap))
+            .route("/debug/pprof/profile", get(handle_pprof_profile))
             .with_state(Arc::new(metrics_for_server));
         info!(addr = %proxy_config.internal_listen_address, "metrics server listening");
         if let Err(e) = axum::serve(metrics_listener, app).await {
