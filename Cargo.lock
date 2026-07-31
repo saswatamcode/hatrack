@@ -1019,6 +1019,7 @@ dependencies = [
  "itoa",
  "jemalloc_pprof",
  "kubert-prometheus-process",
+ "kubert-prometheus-tokio",
  "pprof",
  "prometheus-client",
  "reqwest",
@@ -1525,6 +1526,18 @@ dependencies = [
  "libc",
  "procfs",
  "prometheus-client",
+ "tracing",
+]
+
+[[package]]
+name = "kubert-prometheus-tokio"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "639670482534c37eb44caf6f4b72cc5da2f2c06aed39d1fb0cba940569428212"
+dependencies = [
+ "prometheus-client",
+ "tokio",
+ "tokio-metrics",
  "tracing",
 ]
 
@@ -3141,6 +3154,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "tokio-metrics"
+version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e0410015c6db7b67b9c9ab2a3af4d74a942d637ff248d0d055073750deac6f9"
+dependencies = [
+ "futures-util",
+ "pin-project-lite",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

@@ -77,6 +77,13 @@ impl ProxyMetrics {
             warn!(%error, "failed to register process metrics");
         }
 
+        let metrics = kubert_prometheus_tokio::Runtime::register(
+            registry.sub_registry_with_prefix("tokio_rt"),
+            tokio::runtime::Handle::current(),
+        );
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        tokio::spawn(async move { metrics.updated(&mut interval).await });
+
         let server_requests = Family::default();
         registry.register(
             "http_server_requests",
